@@ -26,7 +26,8 @@ var (
 
 // helpText is the one-line keyboard reference shown at the bottom of the screen.
 // It is a package-level constant because it never changes at runtime.
-const helpText = " Tab:switch pane  ↑↓/jk:navigate  PgUp/PgDn:scroll  Enter/→:open  ←/Bksp:up  g/G:top/end  q:quit"
+const helpText = " Tab:switch  ↑↓/jk:navigate  PgUp/PgDn:scroll  Enter/→:open  ←/Bksp:up  g/G:top/end  Space/F3:preview  q:quit"
+const previewHelpText = " ↑↓/jk:scroll  PgUp/PgDn:page  Esc/Space:close"
 
 // model is the top-level application state managed by Bubble Tea.
 //
@@ -40,12 +41,13 @@ const helpText = " Tab:switch pane  ↑↓/jk:navigate  PgUp/PgDn:scroll  Enter/
 // snapshot. To mutate state you change the local copy and return it. This is
 // unlike a class in C# or Python where methods mutate the instance in place.
 type model struct {
-	left   pane
-	right  pane
-	active int // leftPane or rightPane
-	width  int // current terminal width in columns
-	height int // current terminal height in rows
-	err    error
+	left    pane
+	right   pane
+	active  int // leftPane or rightPane
+	width   int // current terminal width in columns
+	height  int // current terminal height in rows
+	err     error
+	preview preview
 }
 
 // initialModel constructs the starting state of the application.
@@ -117,6 +119,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		m.err = nil
+
+		// When the preview overlay is open, all keys go to it; nothing reaches the panes.
+		if m.preview.open {
+			vl := previewVisibleLines(m.height)
+			switch msg.String() {
+			case "esc", " ", "q":
+				m.preview.close()
+			case "up", "k":
+				m.preview.scrollUp(1)
+			case "down", "j":
+				m.preview.scrollDown(1, vl)
+			case "pgup", "ctrl+u":
+				m.preview.scrollUp(vl)
+			case "pgdown", "ctrl+d":
+				m.preview.scrollDown(vl, vl)
+			case "home", "g":
+				m.preview.offset = 0
+			case "end", "G":
+				m.preview.scrollDown(len(m.preview.lines), vl)
+			}
+			return m, nil
+		}
+
 		vr := m.visibleRows()
 		p := m.currentPane()
 
@@ -179,6 +204,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					p.seekByName(prevName, vr)
 				}
 			}
+
+		case " ", "f3":
+			if sel := p.selected(); sel != nil && !sel.isDir {
+				m.preview.load(filepath.Join(p.path, sel.name))
+			}
 		}
 	}
 	return m, nil
@@ -218,14 +248,25 @@ func (m model) View() string {
 	statusBar := statusBarStyle.Width(m.width - 2).Render(statusMsg)
 
 	// Truncate the help line to terminal width for the same reason.
-	helpRunes := []rune(helpText)
+	activeHelpText := helpText
+	if m.preview.open {
+		activeHelpText = previewHelpText
+	}
+	helpRunes := []rune(activeHelpText)
 	if len(helpRunes) > m.width {
 		helpRunes = helpRunes[:m.width]
 	}
 	help := helpStyle.Render(string(helpRunes))
 
+	base := lipgloss.JoinVertical(lipgloss.Left, panes, statusBar, help)
+
+	if m.preview.open {
+		overlay := m.preview.render(m.width, m.height)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
+	}
+
 	// JoinVertical stacks strings top-to-bottom, inserting "\n" between them.
-	return lipgloss.JoinVertical(lipgloss.Left, panes, statusBar, help)
+	return base
 }
 
 // statusMessage builds the one-line description shown in the status bar.
